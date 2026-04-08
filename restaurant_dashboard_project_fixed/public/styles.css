@@ -72,13 +72,11 @@
 }
 
 .kpi-ring {
-  width: 56px;
-  height: 56px;
-  border: 2px solid rgba(255,255,255,0.18);
+  display: none;
 }
 
 .kpi-ring span {
-  font-size: 14px;
+ display: none;
 }
 
 .chart-container {
