@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Luxury Restaurant Weekly Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="bg"></div>
+  <div class="overlay"></div>
+
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">Telegram Mini App • Weekly analytics</div>
+        <h1>Luxury Restaurant Dashboard</h1>
+        <p class="subtitle">Еженедельная аналитика официантов и месячный график роста команды.</p>
+      </div>
+      <div class="top-controls">
+        <button class="period-btn active" data-period="weekly">Неделя</button>
+        <button class="period-btn" data-period="monthly">Месяц</button>
+      </div>
+    </header>
+
+    <section class="summary-grid" id="summaryGrid">
+      <article class="summary-card">
+        <span>Общая выручка</span>
+        <strong id="totalRevenue">0</strong>
+      </article>
+      <article class="summary-card">
+        <span>Средний чек / гость</span>
+        <strong id="avgGuestCheck">0</strong>
+      </article>
+      <article class="summary-card">
+        <span>Средний чек / стол</span>
+        <strong id="avgTableCheck">0</strong>
+      </article>
+      <article class="summary-card">
+        <span>Всего десертов</span>
+        <strong id="totalDesserts">0</strong>
+      </article>
+      <article class="summary-card">
+        <span>Средний KPI</span>
+        <strong id="avgKpi">0%</strong>
+      </article>
+      <article class="summary-card selector-card">
+        <span id="selectorLabel">Выбор недели</span>
+        <select id="rangeSelect"></select>
+      </article>
+    </section>
+
+    <section class="main-grid">
+      <article class="panel chart-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-kicker" id="chartKicker">Неделя</div>
+            <h2 id="chartTitle">Сравнение официантов</h2>
+          </div>
+        </div>
+        <canvas id="dashboardChart"></canvas>
+      </article>
+
+      <aside class="panel notes-panel">
+        <div class="panel-kicker">Интерпретация</div>
+        <h2>Что происходит</h2>
+        <div class="notes" id="notes"></div>
+      </aside>
+    </section>
+
+    <section class="leaderboard panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-kicker">Top performers</div>
+          <h2 id="boardTitle">Лидеры недели</h2>
+        </div>
+      </div>
+      <div class="cards" id="waiterCards"></div>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
