@@ -1,269 +1,335 @@
-import express from 'express';
-import dotenv from 'dotenv';
-import { google } from 'googleapis';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const path = require('path');
+const { GoogleSpreadsheet } = require('google-spreadsheet');
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
-const WEEKLY_SHEET_NAME = process.env.WEEKLY_SHEET_NAME || 'weekly_data';
-const SETTINGS_SHEET_NAME = process.env.SETTINGS_SHEET_NAME || 'settings';
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-function parseNumber(value) {
-  if (value === undefined || value === null || value === '') return 0;
-  const normalized = String(value).replace(/\s/g, '').replace(',', '.');
-  const number = Number(normalized);
-  return Number.isFinite(number) ? number : 0;
+const KPI_TARGETS = {
+  avgGuestCheck: 390000,
+  avgTableCheck: 730000,
+  marginPercent: 32,
+  dessertPercent: 100
+};
+
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+
+const serviceAccount = {
+  client_email: process.env.GOOGLE_CLIENT_EMAIL,
+  private_key: process.env.GOOGLE_PRIVATE_KEY
+    ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    : undefined
+};
+
+function safeNum(value) {
+  const n = Number(String(value ?? '').replace(/\s/g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
 }
 
-function percentChange(current, previous) {
-  if (!previous) return 0;
-  return Number((((current - previous) / previous) * 100).toFixed(1));
+function safeStr(value) {
+  return String(value ?? '').trim();
 }
 
-function getMonthKeyFromWeek(week) {
-  const match = String(week).match(/^(\d{4})-W(\d{1,2})$/);
-  if (!match) return 'Unknown';
-  const [, year, weekNumStr] = match;
-  const weekNum = Number(weekNumStr);
-  const jan4 = new Date(Date.UTC(Number(year), 0, 4));
-  const jan4Day = jan4.getUTCDay() || 7;
-  const monday = new Date(jan4);
-  monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1 + (weekNum - 1) * 7);
-  return `${monday.getUTCFullYear()}-${String(monday.getUTCMonth() + 1).padStart(2, '0')}`;
+function getISOWeek(date) {
+  const tmp = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = tmp.getUTCDay() || 7;
+  tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(tmp.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((tmp - yearStart) / 86400000) + 1) / 7);
+  return `${tmp.getUTCFullYear()} W${String(weekNo).padStart(2, '0')}`;
 }
 
-async function getSheetsClient() {
-  if (!SPREADSHEET_ID) {
-    throw new Error('SPREADSHEET_ID is not configured');
-  }
-  if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not configured');
-  }
-
-  const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly']
-  });
-
-  return google.sheets({ version: 'v4', auth });
+function getMonthKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
 }
 
-async function loadRawData() {
-  const sheets = await getSheetsClient();
+function computeWaiterKpi(waiter) {
+  const avgGuestCheck = waiter.avgGuestCheck || 0;
+  const avgTableCheck = waiter.avgTableCheck || 0;
+  const marginPercent = waiter.totalDishes > 0 ? (waiter.marginalDishes / waiter.totalDishes) * 100 : 0;
+  const dessertPercent = waiter.tables > 0 ? (waiter.desserts / waiter.tables) * 100 : 0;
 
-  const [weeklyRes, settingsRes] = await Promise.all([
-    sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${WEEKLY_SHEET_NAME}!A1:H500`
-    }),
-    sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${SETTINGS_SHEET_NAME}!A1:B50`
-    }).catch(() => ({ data: { values: [] } }))
-  ]);
+  const avgGuestProgress = avgGuestCheck > 0 ? Math.round((avgGuestCheck / KPI_TARGETS.avgGuestCheck) * 100) : 0;
+  const avgTableProgress = avgTableCheck > 0 ? Math.round((avgTableCheck / KPI_TARGETS.avgTableCheck) * 100) : 0;
+  const marginProgress = marginPercent > 0 ? Math.round((marginPercent / KPI_TARGETS.marginPercent) * 100) : 0;
+  const dessertProgress = dessertPercent > 0 ? Math.round((dessertPercent / KPI_TARGETS.dessertPercent) * 100) : 0;
 
-  const rows = weeklyRes.data.values || [];
-  if (rows.length < 2) {
-    return { entries: [], settings: {} };
-  }
-
-  const headers = rows[0].map((h) => String(h).trim().toLowerCase());
-  const dataRows = rows.slice(1).filter((row) => row[0] && row[1]);
-
-  const entries = dataRows.map((row) => {
-    const get = (name) => row[headers.indexOf(name)] ?? '';
-    return {
-      week: String(get('week')).trim(),
-      waiter: String(get('waiter')).trim(),
-      amount: parseNumber(get('amount')),
-      avgGuestCheck: parseNumber(get('avg_guest_check')),
-      avgTableCheck: parseNumber(get('avg_table_check')),
-      desserts: parseNumber(get('desserts')),
-      marginalDishes: parseNumber(get('marginal_dishes')),
-      kpi: parseNumber(get('kpi'))
-    };
-  });
-
-  const settingsRows = settingsRes.data.values || [];
-  const settings = Object.fromEntries(
-    settingsRows
-      .filter((row) => row[0])
-      .map((row) => [String(row[0]).trim(), parseNumber(row[1]) || row[1]])
+  const total = Math.round(
+    (avgGuestProgress + avgTableProgress + marginProgress + dessertProgress) / 4
   );
 
-  return { entries, settings };
-}
-
-function buildWeeklyResponse(entries, settings, requestedWeek) {
-  const weeks = [...new Set(entries.map((e) => e.week))].sort();
-  const currentWeek = requestedWeek && weeks.includes(requestedWeek)
-    ? requestedWeek
-    : weeks[weeks.length - 1];
-
-  const previousWeek = weeks[weeks.indexOf(currentWeek) - 1] || null;
-  const currentEntries = entries.filter((e) => e.week === currentWeek);
-  const previousEntries = entries.filter((e) => e.week === previousWeek);
-  const previousMap = new Map(previousEntries.map((e) => [e.waiter, e]));
-
-  const waiters = currentEntries
-    .map((entry) => {
-      const previous = previousMap.get(entry.waiter);
-      return {
-        name: entry.waiter,
-        amount: entry.amount,
-        avgGuestCheck: entry.avgGuestCheck,
-        avgTableCheck: entry.avgTableCheck,
-        desserts: entry.desserts,
-        marginalDishes: entry.marginalDishes,
-        kpi: entry.kpi,
-        trendAmount: percentChange(entry.amount, previous?.amount || 0),
-        trendDesserts: percentChange(entry.desserts, previous?.desserts || 0),
-        trendAvgGuestCheck: percentChange(entry.avgGuestCheck, previous?.avgGuestCheck || 0),
-        trendKpi: percentChange(entry.kpi, previous?.kpi || 0)
-      };
-    })
-    .sort((a, b) => b.amount - a.amount);
-
-  const summary = {
-    totalRevenue: waiters.reduce((sum, w) => sum + w.amount, 0),
-    avgGuestCheck: waiters.length ? Math.round(waiters.reduce((sum, w) => sum + w.avgGuestCheck, 0) / waiters.length) : 0,
-    avgTableCheck: waiters.length ? Math.round(waiters.reduce((sum, w) => sum + w.avgTableCheck, 0) / waiters.length) : 0,
-    totalDesserts: waiters.reduce((sum, w) => sum + w.desserts, 0),
-    avgKpi: waiters.length ? Number((waiters.reduce((sum, w) => sum + w.kpi, 0) / waiters.length).toFixed(1)) : 0
-  };
-
   return {
-    period: 'weekly',
-    currentWeek,
-    previousWeek,
-    availableWeeks: weeks,
-    settings,
-    summary,
-    waiters
+    marginPercent: Math.round(marginPercent),
+    dessertPercent: Math.round(dessertPercent),
+    kpi: total
   };
 }
 
-function buildMonthlyResponse(entries, requestedMonth) {
-  const allWeeks = [...new Set(entries.map((e) => e.week))].sort();
-  const monthMap = new Map();
-
-  for (const week of allWeeks) {
-    const monthKey = getMonthKeyFromWeek(week);
-    if (!monthMap.has(monthKey)) monthMap.set(monthKey, []);
-    monthMap.get(monthKey).push(week);
+async function getSheetRows() {
+  if (!SHEET_ID || !serviceAccount.client_email || !serviceAccount.private_key) {
+    throw new Error('Не заполнены GOOGLE_SHEET_ID / GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY');
   }
 
-  const availableMonths = [...monthMap.keys()].sort();
-  const currentMonth = requestedMonth && monthMap.has(requestedMonth)
-    ? requestedMonth
-    : availableMonths[availableMonths.length - 1];
+  const doc = new GoogleSpreadsheet(SHEET_ID);
+  await doc.useServiceAccountAuth(serviceAccount);
+  await doc.loadInfo();
 
-  const selectedWeeks = monthMap.get(currentMonth) || [];
-  const monthEntries = entries.filter((e) => selectedWeeks.includes(e.week));
-  const waiterMap = new Map();
+  const sheet = doc.sheetsByTitle['weekly_data'] || doc.sheetsByIndex[0];
+  const rows = await sheet.getRows();
 
-  for (const entry of monthEntries) {
-    if (!waiterMap.has(entry.waiter)) {
-      waiterMap.set(entry.waiter, {
-        name: entry.waiter,
+  return rows.map((row) => {
+    const rawDate =
+      row.get('date') ||
+      row.get('Дата') ||
+      row.get('day') ||
+      row.get('created_at') ||
+      '';
+
+    const parsedDate = rawDate ? new Date(rawDate) : null;
+    const validDate = parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null;
+
+    const waiter =
+      row.get('name') ||
+      row.get('waiter') ||
+      row.get('официант') ||
+      row.get('Официант') ||
+      '';
+
+    const amount =
+      safeNum(row.get('amount')) ||
+      safeNum(row.get('revenue')) ||
+      safeNum(row.get('sum')) ||
+      safeNum(row.get('выручка'));
+
+    const guests =
+      safeNum(row.get('guests')) ||
+      safeNum(row.get('guestCount')) ||
+      safeNum(row.get('гости'));
+
+    const tables =
+      safeNum(row.get('tables')) ||
+      safeNum(row.get('tableCount')) ||
+      safeNum(row.get('столы'));
+
+    const desserts =
+      safeNum(row.get('desserts')) ||
+      safeNum(row.get('dessertCount')) ||
+      safeNum(row.get('десерты'));
+
+    const marginalDishes =
+      safeNum(row.get('marginalDishes')) ||
+      safeNum(row.get('marginDishes')) ||
+      safeNum(row.get('маржинальные'));
+
+    const totalDishes =
+      safeNum(row.get('totalDishes')) ||
+      safeNum(row.get('allDishes')) ||
+      safeNum(row.get('all_positions')) ||
+      safeNum(row.get('всеБлюда'));
+
+    return {
+      date: validDate,
+      dateKey: validDate ? validDate.toISOString().slice(0, 10) : '',
+      week: validDate ? getISOWeek(validDate) : safeStr(row.get('week')),
+      month: validDate ? getMonthKey(validDate) : safeStr(row.get('month')),
+      name: safeStr(waiter),
+      amount,
+      guests,
+      tables,
+      desserts,
+      marginalDishes,
+      totalDishes
+    };
+  }).filter((r) => r.name);
+}
+
+function aggregateWaiters(rows) {
+  const map = new Map();
+
+  for (const row of rows) {
+    if (!map.has(row.name)) {
+      map.set(row.name, {
+        name: row.name,
         amount: 0,
-        avgGuestCheckSum: 0,
-        avgTableCheckSum: 0,
+        guests: 0,
+        tables: 0,
         desserts: 0,
         marginalDishes: 0,
-        kpiSum: 0,
-        weeksCount: 0,
-        weeklySeries: []
+        totalDishes: 0
       });
     }
 
-    const item = waiterMap.get(entry.waiter);
-    item.amount += entry.amount;
-    item.avgGuestCheckSum += entry.avgGuestCheck;
-    item.avgTableCheckSum += entry.avgTableCheck;
-    item.desserts += entry.desserts;
-    item.marginalDishes += entry.marginalDishes;
-    item.kpiSum += entry.kpi;
-    item.weeksCount += 1;
-    item.weeklySeries.push({ week: entry.week, amount: entry.amount });
+    const item = map.get(row.name);
+    item.amount += row.amount;
+    item.guests += row.guests;
+    item.tables += row.tables;
+    item.desserts += row.desserts;
+    item.marginalDishes += row.marginalDishes;
+    item.totalDishes += row.totalDishes;
   }
 
-  const waiters = [...waiterMap.values()]
-    .map((item) => ({
-      name: item.name,
-      amount: item.amount,
-      avgGuestCheck: item.weeksCount ? Math.round(item.avgGuestCheckSum / item.weeksCount) : 0,
-      avgTableCheck: item.weeksCount ? Math.round(item.avgTableCheckSum / item.weeksCount) : 0,
-      desserts: item.desserts,
-      marginalDishes: item.marginalDishes,
-      kpi: item.weeksCount ? Number((item.kpiSum / item.weeksCount).toFixed(1)) : 0,
-      weeklySeries: selectedWeeks.map((week) => {
-        const found = item.weeklySeries.find((s) => s.week === week);
-        return found ? found.amount : 0;
-      })
-    }))
-    .sort((a, b) => b.amount - a.amount);
+  const waiters = Array.from(map.values()).map((item) => {
+    const avgGuestCheck = item.guests > 0 ? Math.round(item.amount / item.guests) : 0;
+    const avgTableCheck = item.tables > 0 ? Math.round(item.amount / item.tables) : 0;
+    const extra = computeWaiterKpi({
+      ...item,
+      avgGuestCheck,
+      avgTableCheck
+    });
+
+    return {
+      ...item,
+      avgGuestCheck,
+      avgTableCheck,
+      marginPercent: extra.marginPercent,
+      dessertPercent: extra.dessertPercent,
+      kpi: extra.kpi
+    };
+  });
+
+  waiters.sort((a, b) => b.amount - a.amount);
+
+  return waiters;
+}
+
+function buildSummary(waiters) {
+  const totalRevenue = waiters.reduce((sum, w) => sum + w.amount, 0);
+  const totalGuests = waiters.reduce((sum, w) => sum + w.guests, 0);
+  const totalTables = waiters.reduce((sum, w) => sum + w.tables, 0);
+  const totalDesserts = waiters.reduce((sum, w) => sum + w.desserts, 0);
+  const avgKpi = waiters.length
+    ? Math.round(waiters.reduce((sum, w) => sum + (w.kpi || 0), 0) / waiters.length)
+    : 0;
 
   return {
-    period: 'monthly',
-    currentMonth,
-    availableMonths,
-    selectedWeeks,
-    summary: {
-      totalRevenue: waiters.reduce((sum, w) => sum + w.amount, 0),
-      avgGuestCheck: waiters.length ? Math.round(waiters.reduce((sum, w) => sum + w.avgGuestCheck, 0) / waiters.length) : 0,
-      avgTableCheck: waiters.length ? Math.round(waiters.reduce((sum, w) => sum + w.avgTableCheck, 0) / waiters.length) : 0,
-      totalDesserts: waiters.reduce((sum, w) => sum + w.desserts, 0),
-      avgKpi: waiters.length ? Number((waiters.reduce((sum, w) => sum + w.kpi, 0) / waiters.length).toFixed(1)) : 0
-    },
-    chart: {
-      labels: selectedWeeks,
-      series: Object.fromEntries(waiters.map((w) => [w.name, w.weeklySeries]))
-    },
-    waiters
+    totalRevenue,
+    avgGuestCheck: totalGuests > 0 ? Math.round(totalRevenue / totalGuests) : 0,
+    avgTableCheck: totalTables > 0 ? Math.round(totalRevenue / totalTables) : 0,
+    totalDesserts,
+    avgKpi
+  };
+}
+
+function buildWeekList(rows) {
+  return [...new Set(rows.map((r) => r.week).filter(Boolean))].sort().reverse();
+}
+
+function buildMonthList(rows) {
+  return [...new Set(rows.map((r) => r.month).filter(Boolean))].sort().reverse();
+}
+
+function buildTrend(currentWaiters, previousWaiters) {
+  const prevMap = new Map(previousWaiters.map((w) => [w.name, w]));
+
+  return currentWaiters.map((w) => {
+    const prev = prevMap.get(w.name);
+
+    const trendAmount = prev && prev.amount > 0
+      ? ((w.amount - prev.amount) / prev.amount) * 100
+      : 0;
+
+    const trendKpi = prev && prev.kpi > 0
+      ? ((w.kpi - prev.kpi) / prev.kpi) * 100
+      : 0;
+
+    return {
+      ...w,
+      trendAmount,
+      trendKpi
+    };
+  });
+}
+
+function buildMonthlyChart(rows, selectedMonth) {
+  const monthRows = rows.filter((r) => r.month === selectedMonth);
+
+  const weekKeys = [...new Set(monthRows.map((r) => r.week).filter(Boolean))].sort();
+  const waiterNames = [...new Set(monthRows.map((r) => r.name))];
+
+  const series = {};
+
+  for (const name of waiterNames) {
+    series[name] = weekKeys.map((week) => {
+      const weekRows = monthRows.filter((r) => r.week === week && r.name === name);
+      return weekRows.reduce((sum, r) => sum + r.amount, 0);
+    });
+  }
+
+  return {
+    labels: weekKeys,
+    series
   };
 }
 
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const { entries, settings } = await loadRawData();
-    const period = String(req.query.period || 'weekly').toLowerCase();
+    const period = req.query.period === 'monthly' ? 'monthly' : 'weekly';
+    const rows = await getSheetRows();
 
-    if (!entries.length) {
+    const availableWeeks = buildWeekList(rows);
+    const availableMonths = buildMonthList(rows);
+
+    const currentWeek = req.query.week || availableWeeks[0] || '';
+    const currentMonth = req.query.month || availableMonths[0] || '';
+
+    if (period === 'weekly') {
+      const filteredRows = rows.filter((r) => r.week === currentWeek);
+      const previousWeek = availableWeeks[availableWeeks.indexOf(currentWeek) + 1] || '';
+      const previousRows = rows.filter((r) => r.week === previousWeek);
+
+      const waitersCurrent = aggregateWaiters(filteredRows);
+      const waitersPrevious = aggregateWaiters(previousRows);
+      const waiters = buildTrend(waitersCurrent, waitersPrevious);
+
       return res.json({
         period,
-        summary: {
-          totalRevenue: 0,
-          avgGuestCheck: 0,
-          avgTableCheck: 0,
-          totalDesserts: 0,
-          avgKpi: 0
-        },
-        waiters: [],
-        settings,
-        availableWeeks: [],
-        availableMonths: []
+        currentWeek,
+        availableWeeks,
+        waiters,
+        summary: buildSummary(waiters)
       });
     }
 
-    if (period === 'monthly') {
-      return res.json(buildMonthlyResponse(entries, String(req.query.month || '')));
-    }
+    const filteredRows = rows.filter((r) => r.month === currentMonth);
+    const waitersBase = aggregateWaiters(filteredRows);
 
-    return res.json(buildWeeklyResponse(entries, settings, String(req.query.week || '')));
+    const prevMonth = availableMonths[availableMonths.indexOf(currentMonth) + 1] || '';
+    const previousRows = rows.filter((r) => r.month === prevMonth);
+    const previousWaiters = aggregateWaiters(previousRows);
+    const waiters = buildTrend(waitersBase, previousWaiters);
+
+    const chart = buildMonthlyChart(rows, currentMonth);
+
+    const monthWeeks = [...new Set(filteredRows.map((r) => r.week).filter(Boolean))].sort();
+
+    const enrichedWaiters = waiters.map((w) => ({
+      ...w,
+      weeklySeries: monthWeeks.map((week) => {
+        const amount = filteredRows
+          .filter((r) => r.week === week && r.name === w.name)
+          .reduce((sum, r) => sum + r.amount, 0);
+        return amount;
+      })
+    }));
+
+    return res.json({
+      period,
+      currentMonth,
+      availableMonths,
+      waiters: enrichedWaiters,
+      summary: buildSummary(enrichedWaiters),
+      chart
+    });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Failed to load dashboard data', details: error.message });
+    res.status(500).json({
+      error: 'Ошибка загрузки dashboard',
+      details: error.message
+    });
   }
 });
 
@@ -272,5 +338,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Dashboard running on http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
