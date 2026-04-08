@@ -14,7 +14,6 @@ const KPI_TARGETS = {
 const state = {
   period: 'weekly',
   selectedRange: '',
-  chart: null,
   weeklyData: null,
   monthlyData: null
 };
@@ -29,11 +28,8 @@ const els = {
   selectorLabel: document.getElementById('selectorLabel'),
   waiterCards: document.getElementById('waiterCards'),
   notes: document.getElementById('notes'),
-  chartTitle: document.getElementById('chartTitle'),
-  chartKicker: document.getElementById('chartKicker'),
   boardTitle: document.getElementById('boardTitle'),
-  periodButtons: [...document.querySelectorAll('.period-btn')],
-  chartCanvas: document.getElementById('dashboardChart')
+  periodButtons: [...document.querySelectorAll('.period-btn')]
 };
 
 function formatNumber(value) {
@@ -95,6 +91,58 @@ function getSafeNumber(value, fallback = 0) {
   return Number.isFinite(num) ? num : fallback;
 }
 
+function getISOWeekStartDate(year, week) {
+  const simple = new Date(Date.UTC(year, 0, 4));
+  const dayOfWeek = simple.getUTCDay() || 7;
+  const monday = new Date(simple);
+  monday.setUTCDate(simple.getUTCDate() - dayOfWeek + 1 + (week - 1) * 7);
+  return monday;
+}
+
+function formatDateShort(date) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short'
+  }).format(date);
+}
+
+function prettifyWeekLabel(value) {
+  if (!value) return 'Неделя';
+
+  const str = String(value).trim();
+  const match = str.match(/(\d{4})\s*[-/]?\s*[Ww](\d{1,2})/);
+  if (!match) return str;
+
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  const start = getISOWeekStartDate(year, week);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+
+  return `${formatDateShort(start)} — ${formatDateShort(end)}`;
+}
+
+function prettifyMonthLabel(value) {
+  if (!value) return 'Месяц';
+
+  const str = String(value).trim();
+
+  if (/^\d{4}-\d{2}$/.test(str)) {
+    const [year, month] = str.split('-').map(Number);
+    const date = new Date(year, month - 1, 1);
+    return new Intl.DateTimeFormat('ru-RU', {
+      month: 'long',
+      year: 'numeric'
+    }).format(date);
+  }
+
+  return str;
+}
+
+function prettifyRangeByPeriod(value, period) {
+  return period === 'weekly' ? prettifyWeekLabel(value) : prettifyMonthLabel(value);
+}
+
 function calcKpi(waiter) {
   const avgGuestCheck = getSafeNumber(waiter.avgGuestCheck);
   const avgTableCheck = getSafeNumber(waiter.avgTableCheck);
@@ -140,13 +188,11 @@ function calcKpi(waiter) {
     avgTableCheck,
     marginPercent: Math.round(marginPercent),
     dessertPercent: Math.round(dessertPercent),
-
     avgGuestProgress,
     avgTableProgress,
     marginProgress,
     dessertProgress,
     total,
-
     avgGuestLeft: Math.max(0, KPI_TARGETS.avgGuestCheck - Math.round(avgGuestCheck)),
     avgTableLeft: Math.max(0, KPI_TARGETS.avgTableCheck - Math.round(avgTableCheck)),
     marginLeft: Math.max(0, KPI_TARGETS.marginPercent - Math.round(marginPercent)),
@@ -176,6 +222,7 @@ function kpiMiniCard(label, fact, plan, progress, helper = '') {
 
 async function fetchData(period, rangeValue = '') {
   const query = new URLSearchParams({ period });
+
   if (period === 'weekly' && rangeValue) query.set('week', rangeValue);
   if (period === 'monthly' && rangeValue) query.set('month', rangeValue);
 
@@ -198,8 +245,13 @@ function renderRangeSelect(data) {
   const current = isWeekly ? data.currentWeek : data.currentMonth;
 
   els.selectorLabel.textContent = isWeekly ? 'Выбор недели' : 'Выбор месяца';
+
   els.rangeSelect.innerHTML = items
-    .map((item) => `<option value="${item}" ${item === current ? 'selected' : ''}>${item}</option>`)
+    .map((item) => {
+      const selected = item === current ? 'selected' : '';
+      const label = prettifyRangeByPeriod(item, state.period);
+      return `<option value="${item}" ${selected}>${label}</option>`;
+    })
     .join('');
 }
 
@@ -246,7 +298,7 @@ function renderNotes(data) {
         },
         {
           title: 'Фокус месяца',
-          text: `Смотри месячный график: он показывает, кто реально растет от недели к неделе.`
+          text: `Смотри, кто стабильно растет от недели к неделе и держит KPI выше остальных.`
         },
         {
           title: 'Десерты и маржа',
@@ -366,105 +418,10 @@ function renderCards(data) {
   }).join('');
 }
 
-function destroyChart() {
-  if (state.chart) {
-    state.chart.destroy();
-    state.chart = null;
-  }
-}
-
-function renderChart(data) {
-  destroyChart();
-
-  let labels = [];
-  let datasets = [];
-
-  if (state.period === 'weekly') {
-    labels = data.waiters.map((w) => w.name);
-    datasets = [{
-      label: 'Выручка',
-      data: data.waiters.map((w) => w.amount),
-      backgroundColor: [
-        'rgba(217,179,106,0.96)',
-        'rgba(217,179,106,0.88)',
-        'rgba(217,179,106,0.80)',
-        'rgba(217,179,106,0.72)',
-        'rgba(217,179,106,0.64)',
-        'rgba(217,179,106,0.56)',
-        'rgba(217,179,106,0.48)',
-        'rgba(217,179,106,0.40)'
-      ],
-      borderRadius: 14,
-      borderSkipped: false
-    }];
-    els.chartTitle.textContent = 'Сравнение официантов за неделю';
-    els.chartKicker.textContent = data.currentWeek || 'Неделя';
-    els.boardTitle.textContent = 'Лидеры недели';
-  } else {
-    labels = data.chart?.labels || [];
-    const palette = [
-      'rgba(217,179,106,1)',
-      'rgba(126,214,164,1)',
-      'rgba(120,170,255,1)',
-      'rgba(255,125,125,1)',
-      'rgba(255,209,102,1)',
-      'rgba(186,104,200,1)'
-    ];
-
-    datasets = Object.entries(data.chart?.series || {}).map(([name, values], index) => ({
-      label: name,
-      data: values,
-      borderColor: palette[index % palette.length],
-      backgroundColor: palette[index % palette.length],
-      tension: 0.35,
-      fill: false
-    }));
-    els.chartTitle.textContent = 'Месячный график по неделям';
-    els.chartKicker.textContent = data.currentMonth || 'Месяц';
-    els.boardTitle.textContent = 'Итоги месяца';
-  }
-
-  state.chart = new Chart(els.chartCanvas, {
-    type: state.period === 'weekly' ? 'bar' : 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          labels: { color: '#fff8ef' }
-        },
-        tooltip: {
-          backgroundColor: 'rgba(10, 8, 7, 0.95)',
-          borderColor: 'rgba(217,179,106,0.18)',
-          borderWidth: 1,
-          titleColor: '#fff8ef',
-          bodyColor: '#eadfce',
-          callbacks: {
-            label: (context) => ` ${context.dataset.label}: ${formatNumber(context.raw)}`
-          }
-        }
-      },
-      scales: {
-        x: {
-          ticks: { color: '#eadfce' },
-          grid: { display: false }
-        },
-        y: {
-          ticks: {
-            color: '#bcae9f',
-            callback: (value) => formatNumber(value)
-          },
-          grid: { color: 'rgba(255,240,220,0.06)' }
-        }
-      }
-    }
-  });
-}
-
 async function load(period = state.period, rangeValue = '') {
   state.period = period;
   const data = await fetchData(period, rangeValue);
+
   if (period === 'weekly') state.weeklyData = data;
   if (period === 'monthly') state.monthlyData = data;
 
@@ -472,7 +429,8 @@ async function load(period = state.period, rangeValue = '') {
   renderRangeSelect(data);
   renderNotes(data);
   renderCards(data);
-  renderChart(data);
+
+  els.boardTitle.textContent = state.period === 'weekly' ? 'Лидеры недели' : 'Итоги месяца';
 
   els.periodButtons.forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.period === period);
