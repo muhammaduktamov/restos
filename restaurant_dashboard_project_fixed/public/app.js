@@ -4,6 +4,13 @@ if (tg) {
   tg.expand();
 }
 
+const KPI_TARGETS = {
+  avgGuestCheck: 390000,
+  avgTableCheck: 730000,
+  marginPercent: 32,
+  dessertPercent: 100
+};
+
 const state = {
   period: 'weekly',
   selectedRange: '',
@@ -33,6 +40,13 @@ function formatNumber(value) {
   return new Intl.NumberFormat('ru-RU').format(Math.round(value || 0));
 }
 
+function formatMoneyShort(value) {
+  const num = Number(value || 0);
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${Math.round(num / 1000)}k`;
+  return `${Math.round(num)}`;
+}
+
 function formatPercent(value) {
   return `${Number(value || 0).toFixed(1)}%`;
 }
@@ -47,6 +61,117 @@ function trendArrow(value) {
   if (value > 0.1) return '↑';
   if (value < -0.1) return '↓';
   return '→';
+}
+
+function clamp(value, min = 0, max = 999) {
+  return Math.max(min, Math.min(max, Number(value || 0)));
+}
+
+function normalizeProgress(value) {
+  return clamp(Math.round(value || 0), 0, 150);
+}
+
+function getProgressTone(progress) {
+  if (progress >= 100) return 'success';
+  if (progress >= 80) return 'warning';
+  return 'danger';
+}
+
+function getProgressColor(progress) {
+  if (progress >= 100) return '#16c784';
+  if (progress >= 80) return '#f0b90b';
+  return '#ea3943';
+}
+
+function getMedal(index) {
+  if (index === 0) return '👑';
+  if (index === 1) return '🥈';
+  if (index === 2) return '🥉';
+  return '';
+}
+
+function getSafeNumber(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function calcKpi(waiter) {
+  const avgGuestCheck = getSafeNumber(waiter.avgGuestCheck);
+  const avgTableCheck = getSafeNumber(waiter.avgTableCheck);
+
+  const desserts = getSafeNumber(waiter.desserts);
+  const tables = getSafeNumber(waiter.tables);
+  const totalDishes = getSafeNumber(waiter.totalDishes);
+  const marginalDishes = getSafeNumber(waiter.marginalDishes);
+
+  const marginPercentFromData = getSafeNumber(waiter.marginPercent, null);
+  const dessertPercentFromData = getSafeNumber(waiter.dessertPercent, null);
+
+  const marginPercent = totalDishes > 0
+    ? (marginalDishes / totalDishes) * 100
+    : (Number.isFinite(marginPercentFromData) ? marginPercentFromData : 0);
+
+  const dessertPercent = tables > 0
+    ? (desserts / tables) * 100
+    : (Number.isFinite(dessertPercentFromData) ? dessertPercentFromData : 0);
+
+  const avgGuestProgress = avgGuestCheck > 0
+    ? normalizeProgress((avgGuestCheck / KPI_TARGETS.avgGuestCheck) * 100)
+    : 0;
+
+  const avgTableProgress = avgTableCheck > 0
+    ? normalizeProgress((avgTableCheck / KPI_TARGETS.avgTableCheck) * 100)
+    : 0;
+
+  const marginProgress = marginPercent > 0
+    ? normalizeProgress((marginPercent / KPI_TARGETS.marginPercent) * 100)
+    : 0;
+
+  const dessertProgress = dessertPercent > 0
+    ? normalizeProgress((dessertPercent / KPI_TARGETS.dessertPercent) * 100)
+    : 0;
+
+  const total = Math.round(
+    (avgGuestProgress + avgTableProgress + marginProgress + dessertProgress) / 4
+  );
+
+  return {
+    avgGuestCheck,
+    avgTableCheck,
+    marginPercent: Math.round(marginPercent),
+    dessertPercent: Math.round(dessertPercent),
+
+    avgGuestProgress,
+    avgTableProgress,
+    marginProgress,
+    dessertProgress,
+    total,
+
+    avgGuestLeft: Math.max(0, KPI_TARGETS.avgGuestCheck - Math.round(avgGuestCheck)),
+    avgTableLeft: Math.max(0, KPI_TARGETS.avgTableCheck - Math.round(avgTableCheck)),
+    marginLeft: Math.max(0, KPI_TARGETS.marginPercent - Math.round(marginPercent)),
+    dessertsLeft: tables > 0 ? Math.max(0, tables - desserts) : 0
+  };
+}
+
+function kpiMiniCard(label, fact, plan, progress, helper = '') {
+  const tone = getProgressTone(progress);
+  const color = getProgressColor(progress);
+
+  return `
+    <div class="kpi-box ${tone}">
+      <div class="kpi-box-head">
+        <span>${label}</span>
+        <strong style="color:${color}">${progress}%</strong>
+      </div>
+      <div class="kpi-box-fact">${fact}</div>
+      <div class="kpi-box-plan">План: ${plan}</div>
+      <div class="mini-progress">
+        <div class="mini-progress-fill" style="width:${Math.min(progress, 100)}%; background:${color}"></div>
+      </div>
+      ${helper ? `<div class="kpi-box-helper">${helper}</div>` : ''}
+    </div>
+  `;
 }
 
 async function fetchData(period, rangeValue = '') {
@@ -86,7 +211,10 @@ function renderNotes(data) {
 
   const top = data.waiters[0];
   const low = data.waiters[data.waiters.length - 1];
-  const bestDessert = [...data.waiters].sort((a, b) => b.desserts - a.desserts)[0];
+  const bestDessert = [...data.waiters].sort((a, b) => (b.desserts || 0) - (a.desserts || 0))[0];
+  const strongestKpi = [...data.waiters]
+    .map((waiter) => ({ name: waiter.name, kpi: calcKpi(waiter).total }))
+    .sort((a, b) => b.kpi - a.kpi)[0];
 
   const notes = state.period === 'weekly'
     ? [
@@ -95,18 +223,26 @@ function renderNotes(data) {
           text: `${top.name} сейчас впереди по выручке: ${formatNumber(top.amount)}.`
         },
         {
+          title: 'Лучший по KPI',
+          text: `${strongestKpi.name} показывает лучшее выполнение целей: ${strongestKpi.kpi}%.`
+        },
+        {
           title: 'Лучший по десертам',
           text: `${bestDessert.name} лидирует по десертам: ${formatNumber(bestDessert.desserts)}.`
         },
         {
           title: 'Точка роста',
-          text: `${low.name} пока ниже остальных по выручке. Смотри средний чек и допродажи.`
+          text: `${low.name} пока ниже остальных по выручке. Смотри средний чек, маржу и допродажи десертов.`
         }
       ]
     : [
         {
           title: 'Лидер месяца',
           text: `${top.name} впереди по месячной сумме: ${formatNumber(top.amount)}.`
+        },
+        {
+          title: 'Лучший по KPI',
+          text: `${strongestKpi.name} показывает лучшее выполнение месячных целей: ${strongestKpi.kpi}%.`
         },
         {
           title: 'Фокус месяца',
@@ -141,21 +277,89 @@ function renderCards(data) {
       ? `${trendArrow(trendValue)} ${formatPercent(trendValue)} к прошлой неделе`
       : `${waiter.weeklySeries?.length || 0} нед. в месяце`;
 
+    const kpi = calcKpi(waiter);
+    const totalColor = getProgressColor(kpi.total);
+    const totalTone = getProgressTone(kpi.total);
+    const medal = getMedal(index);
+
     return `
-      <article class="waiter-card">
+      <article class="waiter-card ${index === 0 ? 'top-card' : ''}">
         <div class="waiter-top">
-          <div class="waiter-name">${waiter.name}</div>
-          <div class="rank">#${index + 1}</div>
+          <div class="waiter-top-left">
+            <div class="waiter-name-row">
+              <div class="waiter-name">${medal ? `${medal} ${waiter.name}` : waiter.name}</div>
+              <div class="rank">#${index + 1}</div>
+            </div>
+            <div class="trend ${tClass}">${trendLabel}</div>
+          </div>
+
+          <div class="kpi-ring ${totalTone}" style="border-color:${totalColor}">
+            <span style="color:${totalColor}">${kpi.total}%</span>
+          </div>
         </div>
-        <div class="big-amount">${formatNumber(waiter.amount)}</div>
-        <div class="trend ${tClass}">${trendLabel}</div>
-        <div class="detail-grid">
-          <div class="detail"><span>Ср чек / гость</span><strong>${formatNumber(waiter.avgGuestCheck)}</strong></div>
-          <div class="detail"><span>Ср чек / стол</span><strong>${formatNumber(waiter.avgTableCheck)}</strong></div>
-          <div class="detail"><span>Десерты</span><strong>${formatNumber(waiter.desserts)}</strong></div>
-          <div class="detail"><span>Маржинальные</span><strong>${formatNumber(waiter.marginalDishes)}</strong></div>
-          <div class="detail"><span>KPI</span><strong>${waiter.kpi}%</strong></div>
-          <div class="detail"><span>Тренд KPI</span><strong>${waiter.trendKpi ? formatPercent(waiter.trendKpi) : '—'}</strong></div>
+
+        <div class="hero-row">
+          <div>
+            <div class="hero-label">Выручка</div>
+            <div class="big-amount">${formatNumber(waiter.amount)}</div>
+          </div>
+          <div class="hero-chip">
+            <span>AVG KPI</span>
+            <strong style="color:${totalColor}">${kpi.total}%</strong>
+          </div>
+        </div>
+
+        <div class="main-progress">
+          <div class="main-progress-fill" style="width:${Math.min(kpi.total, 100)}%; background:${totalColor}"></div>
+        </div>
+
+        <div class="leader-stats">
+          <div class="leader-stat">
+            <span>Сумма</span>
+            <strong>${formatMoneyShort(waiter.amount)}</strong>
+          </div>
+          <div class="leader-stat">
+            <span>Десерты</span>
+            <strong>${formatNumber(waiter.desserts)}</strong>
+          </div>
+          <div class="leader-stat">
+            <span>Маржа</span>
+            <strong>${kpi.marginPercent}%</strong>
+          </div>
+        </div>
+
+        <div class="detail-grid enhanced">
+          ${kpiMiniCard(
+            'Ср чек / гость',
+            formatNumber(kpi.avgGuestCheck),
+            formatNumber(KPI_TARGETS.avgGuestCheck),
+            kpi.avgGuestProgress,
+            kpi.avgGuestLeft > 0 ? `До цели: ${formatNumber(kpi.avgGuestLeft)}` : 'Цель выполнена'
+          )}
+
+          ${kpiMiniCard(
+            'Ср чек / стол',
+            formatNumber(kpi.avgTableCheck),
+            formatNumber(KPI_TARGETS.avgTableCheck),
+            kpi.avgTableProgress,
+            kpi.avgTableLeft > 0 ? `До цели: ${formatNumber(kpi.avgTableLeft)}` : 'Цель выполнена'
+          )}
+
+          ${kpiMiniCard(
+            'Маржинальные',
+            `${kpi.marginPercent}%`,
+            `${KPI_TARGETS.marginPercent}%`,
+            kpi.marginProgress,
+            kpi.marginLeft > 0 ? `До цели: ${kpi.marginLeft}%` : 'Цель выполнена'
+          )}
+
+          ${kpiMiniCard(
+            'Десерты',
+            `${kpi.dessertPercent}%`,
+            `${KPI_TARGETS.dessertPercent}%`,
+            kpi.dessertProgress,
+            kpi.dessertsLeft > 0 ? `Еще десертов: ${kpi.dessertsLeft}` : 'Цель выполнена'
+          )}
         </div>
       </article>
     `;
@@ -181,12 +385,14 @@ function renderChart(data) {
       label: 'Выручка',
       data: data.waiters.map((w) => w.amount),
       backgroundColor: [
-        'rgba(217,179,106,0.92)',
-        'rgba(217,179,106,0.84)',
-        'rgba(217,179,106,0.76)',
-        'rgba(217,179,106,0.68)',
-        'rgba(217,179,106,0.60)',
-        'rgba(217,179,106,0.52)'
+        'rgba(217,179,106,0.96)',
+        'rgba(217,179,106,0.88)',
+        'rgba(217,179,106,0.80)',
+        'rgba(217,179,106,0.72)',
+        'rgba(217,179,106,0.64)',
+        'rgba(217,179,106,0.56)',
+        'rgba(217,179,106,0.48)',
+        'rgba(217,179,106,0.40)'
       ],
       borderRadius: 14,
       borderSkipped: false
