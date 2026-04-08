@@ -11,7 +11,7 @@
   transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
 }
 body {
-  background: linear-gradient(135deg, #0f172a, #1e293b);
+  background: #f3f4f6;
 }
 .waiter-card:hover {
   transform: translateY(-4px);
