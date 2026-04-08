@@ -80,6 +80,10 @@
 .kpi-ring span {
   font-size: 14px;
 }
+.chart-container {
+  height: 200px !important;
+  max-height: 200px;
+}
 .hero-row {
   display: flex;
   align-items: center;
