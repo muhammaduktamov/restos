@@ -1,4 +1,10 @@
-.waiter-card {
+.dashboard {
+  display: block;
+}
+
+.chart-container {
+  flex: none;
+}.waiter-card {
   position: relative;
   overflow: hidden;
   border-radius: 24px;
