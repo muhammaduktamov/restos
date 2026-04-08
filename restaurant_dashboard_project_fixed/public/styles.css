@@ -298,3 +298,34 @@
     align-items: flex-start;
   }
 }
+.board-single {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+.board-left.full {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.notes-card {
+  background: linear-gradient(180deg, rgba(23,31,49,0.95), rgba(15,21,34,0.96));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 24px;
+  padding: 20px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+}
+
+.waiter-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 820px) {
+  .waiter-cards {
+    grid-template-columns: 1fr;
+  }
+}
