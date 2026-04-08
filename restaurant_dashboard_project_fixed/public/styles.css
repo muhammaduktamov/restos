@@ -1,9 +1,15 @@
-.dashboard {
-  display: block;
+.chart-container {
+  width: 100%;
+  max-width: 1200px;
+  height: 300px; /* ВАЖНО */
+  margin: 0 auto;
+  position: relative;
 }
 
-.chart-container {
-  flex: none;
+canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
 }.waiter-card {
   position: relative;
   overflow: hidden;
