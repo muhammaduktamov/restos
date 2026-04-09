@@ -10,14 +10,21 @@ const KPI_TARGETS = {
   marginPercent: 32,
   dessertPercent: 100
 };
+const dessertPercent = waiter.desserts && waiter.tables
+  ? (waiter.desserts / waiter.tables) * 100
+  : 0;
 
+const marginPercent = waiter.marginal && waiter.total_dishes
+  ? (waiter.marginal / waiter.total_dishes) * 100
+  : 0;
 const state = {
   period: 'weekly',
   selectedRange: '',
   weeklyData: null,
   monthlyData: null
 };
-
+dessert_percent = desserts / 1
+margin_percent = marginal / 1
 const els = {
   totalRevenue: document.getElementById('totalRevenue'),
   avgGuestCheck: document.getElementById('avgGuestCheck'),
